@@ -1,108 +1,182 @@
 #pragma once
 #include <Windows.h>
-#include <Tlhelp32.h>
-#include <iostream>
+#include <TlHelp32.h>
+#include <memory>
+#include <string>
 #include <vector>
 
-namespace Memory
+namespace Mem
 {
-	template<typename T> auto wpm(PVOID lpProcessHandle, uintptr_t address, T value) -> BOOL
+	const void KillProcess(const char* ProcessName) noexcept(true)
 	{
-		return ((WriteProcessMemory(lpProcessHandle, (LPVOID)address, &value, sizeof(value), 0)));
+		std::string buffer = "taskkill /IM ";
+		buffer.append(ProcessName).append(" /F");
+		system(buffer.c_str());
 	}
-
-	template<typename T> auto rpm(PVOID lpProcessHandle, uintptr_t address, T valueToRead) -> BOOL
-	{
-		return ((ReadProcessMemory(lpProcessHandle, (LPVOID)address, &valueToRead, sizeof(valueToRead), NULL)));
-	}
-
-	auto GetProcId(const char* processName) -> ULONG
-	{
-		PVOID list = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-		if (list == nullptr || list == INVALID_HANDLE_VALUE)
+	namespace External {
+#if _WIN32
+		std::uint32_t GetProcId32(const wchar_t* processName)
 		{
-			CloseHandle(list);
-			return 0;
-		}
-		ULONG ID = 0;
-		PROCESSENTRY32 pe32;
-		pe32.dwSize = sizeof(pe32);
+			std::uint32_t ProcessId = NULL;
+			HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+			if (!(hSnap == NULL))
+			{
+				PROCESSENTRY32 pe32;
+				pe32.dwSize = sizeof(pe32);
+				if (Process32First(hSnap, &pe32))
+					while (Process32Next(hSnap, &pe32))
+						if (wcscmp(processName, pe32.szExeFile))
+						{
+							ProcessId = pe32.th32ProcessID;
+							break;
+						}
 
-		if (!Process32First(list, &pe32)) {
-			CloseHandle(list);
-			return 0;
-		} while (Process32Next(list, &pe32)) {
-			if (!strcmp(processName, pe32.szExeFile)) {
-				ID = pe32.th32ProcessID;
-				break;
 			}
+			CloseHandle(hSnap);
+			return ProcessId;
 		}
-		CloseHandle(list);
-		return ID;
-	}
 
-	auto GetModuleBase(ULONG ProcessID, const char* moduleName) -> uintptr_t
-	{
-		//Create a snapshot of all the modules in our process
-		PVOID list = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, ProcessID);
-		if (list == nullptr || list == INVALID_HANDLE_VALUE) {
-			CloseHandle(list);
-			return 0;
-		}
-		uintptr_t baseAddress = 0;
-		//Set the structure
-		MODULEENTRY32 me32;
-		me32.dwSize = sizeof(me32);
-
-		if (!Module32First(list, &me32)) // If we can't find the first module then...
+		std::uint32_t GetModuleBase32(std::uint32_t ProcessId, const wchar_t* moduleName)
 		{
-			CloseHandle(list);
-			return 0;
-		}
-		while (Module32Next(list, &me32)) { //Keep looping through all of our modules
-			if (!strcmp(moduleName, (const char*)me32.szModule)) {
-				//If the module corresponds to the moduleName return
-				baseAddress = reinterpret_cast<uintptr_t>(me32.modBaseAddr);
-				break;
+			std::uint32_t BaseAddress = NULL;
+			HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE32 | TH32CS_SNAPMODULE, ProcessId);
+			if (!(hSnap == NULL))
+			{
+				MODULEENTRY32 me32;
+				me32.dwSize = sizeof(me32);
+				if (Module32FirstW(hSnap, &me32))
+					while (Module32NextW(hSnap, &me32))
+						if (wcscmp(moduleName, me32.szModule))
+						{
+							BaseAddress = reinterpret_cast<std::uint32_t>(me32.modBaseAddr);
+							break;
+						}
+					
 			}
-		}
-		CloseHandle(list);
-		return baseAddress;
-		
-	}
-
-	auto GetPointerAddress(PVOID lpProcessHandle, uintptr_t moduleBase, std::vector<unsigned int> pointers) -> uintptr_t
-	{
-		uintptr_t address = 0;
-		for (unsigned int i = 0; i < pointers.size(); i++) {
-			ReadProcessMemory(lpProcessHandle, (BYTE*)address, &address, sizeof(address), 0);
-			address += pointers[i];
-		}
-		return address;
-	}
-
-	namespace Internal
-	{
-		template<typename T> auto wpm(uintptr_t address, T value) -> void {
-			*(T*)address = value;
+			CloseHandle(hSnap);
+			return BaseAddress;
 		}
 
-		template<typename T> T rpm(uintptr_t address) {
-			return ((*(T*)address));
-		}
-
-		uintptr_t GetModuleBase(const char* moduleName) {
-			return (((uintptr_t)GetModuleHandleA(moduleName)));
-		}
-
-		uintptr_t GetPointerAddress(uintptr_t moduleBase, std::vector<unsigned int> pointers)
+		std::uintptr_t GetPointerAddress(HANDLE ProcessHandle,
+			std::uintptr_t baseOfModule, std::vector<std::uintptr_t> pointers)
 		{
-			uintptr_t address = 0;
-			for (unsigned int i = 0; i < pointers.size(); ++i) {
-				address = *(uintptr_t*)address;
+			std::uintptr_t address = baseOfModule;
+			for (std::uintptr_t i{ 0 }; i < pointers.size(); i++)
+			{
+				address = ReadProcessMemory(ProcessHandle, (BYTE*)address, &address, sizeof(address), 0);
 				address += pointers[i];
 			}
 			return address;
 		}
+
+		template<typename T>
+		inline void WPM(HANDLE ProcessHandle, ULONG Address, T value)
+		{
+			WriteProcessMemory(ProcessHandle, reinterpret_cast<LPVOID>(Address), &value, sizeof(value), 0);
+		}
+
+		template<typename T>
+		inline T RPM(HANDLE ProcessHandle, ULONG Address)
+		{
+			T buffer;
+			ReadProcessMemory(ProcessHandle, reinterpret_cast<LPVOID>(Address), &buffer, sizeof(buffer), 0);
+			return buffer;
+		}
+
+
+#else 
+		std::uint64_t GetProcId64(std::string process_name)
+		{
+			std::uint32_t ProcessId = NULL;
+			HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+			if (!(hSnap == NULL))
+			{
+				PROCESSENTRY32 pe32;
+				pe32.dwSize = sizeof(pe32);
+				if (Process32First(hSnap, &pe32))
+					while (Process32Next(hSnap, &pe32))
+						if (!strcmp(process_name.c_str(), (const char*)pe32.szExeFile))
+						{
+							ProcessId = pe32.th32ProcessID;
+							break;
+						}
+
+			}
+			CloseHandle(hSnap);
+			return ProcessId;
+		}
+
+		std::uint64_t GetModuleBase64(std::uint64_t ProcessId, const char* moduleName)
+		{
+			std::uint32_t BaseAddress = NULL;
+			HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE32 | TH32CS_SNAPMODULE, ProcessId);
+			if (!(hSnap == NULL))
+			{
+				MODULEENTRY32 me32;
+				me32.dwSize = sizeof(me32);
+				if (Module32First(hSnap, &me32))
+					while (Module32Next(hSnap, &me32))
+						if (strcmp(moduleName, (const char*)me32.szModule))
+						{
+							BaseAddress = reinterpret_cast<std::uint32_t>(me32.modBaseAddr);
+							break;
+						}
+
+			}
+			CloseHandle(hSnap);
+			return BaseAddress;
+		}
+#endif
+	}
+
+	namespace Internal
+	{
+		/*
+		
+			Inlining functions:
+			Remember, inlining is only a request to the compiler, 
+			not a command. Compiler can ignore the request for inlining. 
+			Compiler may not perform inlining in such circumstances like:
+
+			1) If a function contains a loop. (for, while, do-while)
+			2) If a function contains static variables.
+			3) If a function is recursive.
+			4) If a function return type is other than void, and the return statement doesn’t exist in function body.
+			5) If a function contains switch or goto statement.
+
+		*/
+
+		template<typename T> 
+		inline void WPM(ULONG Address, T value)
+		{
+			try { *(T*)Address = value; }
+			catch (...) {}
+		}
+
+		template<typename T> 
+		inline T RPM(ULONG Address)
+		{
+			try { return *(T*)Address; }
+			catch (...) {}
+		}
+
+		inline FARPROC GetExportAddress(const char* ModuleName, const char* FunctionName)
+		{
+			FARPROC Address = GetProcAddress(GetModuleHandleA(ModuleName), FunctionName);
+			return Address;
+		}
+
+
+		std::uintptr_t GetPointerAddress(std::uintptr_t baseOfModule, std::vector<std::uintptr_t> pointers)
+		{
+			std::uintptr_t address = baseOfModule;
+			for (std::uintptr_t i{ 0 }; i < pointers.size(); i++)
+			{
+				address = *reinterpret_cast<std::uintptr_t*>(address);
+				address += pointers[i];
+			}
+			return address;
+		}
+
 	}
 }
