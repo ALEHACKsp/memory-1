@@ -14,7 +14,7 @@ namespace Mem
 		system(buffer.c_str());
 	}
 	namespace External {
-#if _WIN32
+#if !_WIN32
 		std::uint32_t GetProcId32(const wchar_t* processName)
 		{
 			std::uint32_t ProcessId = NULL;
